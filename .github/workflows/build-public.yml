@@ -1,0 +1,284 @@
+name: Build llm-wiki (Public)
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # ──────────────────────────────────────────────
+      # 1. 代码检出
+      # ──────────────────────────────────────────────
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version != '' && github.event.inputs.version || github.ref_name }}
+          submodules: recursive
+          fetch-depth: 0
+
+      # ──────────────────────────────────────────────
+      # 2. 系统依赖
+      # ──────────────────────────────────────────────
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            protobuf-compiler \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxfixes-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            pkg-config \
+            dpkg \
+            curl \
+            wget \
+            p7zip-full
+
+      # ──────────────────────────────────────────────
+      # 3. Rust 环境
+      # ──────────────────────────────────────────────
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+          target: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      # ──────────────────────────────────────────────
+      # 4. Node.js 环境
+      # ──────────────────────────────────────────────
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+
+      # ──────────────────────────────────────────────
+      # 5. 核心构建步骤
+      # ──────────────────────────────────────────────
+
+      - name: Install npm dependencies
+        run: |
+          npm install --legacy-peer-deps
+          npm --prefix mcp-server install --legacy-peer-deps
+
+      - name: Build MCP Server
+        run: npm --prefix mcp-server run build
+
+      - name: Build Frontend
+        run: |
+          sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
+          npm run build
+
+      # ──────────────────────────────────────────────
+      # 6. Tauri AppImage 构建
+      # ──────────────────────────────────────────────
+
+      - name: Build Tauri App (AppImage)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}-linux
+          releaseName: 'LLM Wiki Linux ${{ github.ref_name }}'
+          releaseBody: 'Automated build for Linux (AppImage)'
+          args: --target x86_64-unknown-linux-gnu
+
+      - name: Upload AppImage as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-wiki-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 30
+
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/appimage/*.AppImage
+          generate_release_notes: true
+
+  build-deb:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version != '' && github.event.inputs.version || github.ref_name }}
+          submodules: recursive
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            protobuf-compiler \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            libxss-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxfixes-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            pkg-config \
+            dpkg \
+            rpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+
+      - name: Install npm dependencies
+        run: |
+          npm install --legacy-peer-deps
+          npm --prefix mcp-server install --legacy-peer-deps
+
+      - name: Build MCP Server
+        run: npm --prefix mcp-server run build
+
+      - name: Build Frontend
+        run: |
+          sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
+          npm run build
+
+      - name: Build Tauri App (.deb)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}-linux-deb
+          releaseName: 'LLM Wiki Linux ${{ github.ref_name }} (.deb)'
+          args: --target x86_64-unknown-linux-gnu --bundle-type deb
+
+      - name: Upload .deb as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-wiki-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version != '' && github.event.inputs.version || github.ref_name }}
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+
+      - name: Install npm dependencies
+        run: |
+          npm install --legacy-peer-deps
+          npm --prefix mcp-server install --legacy-peer-deps
+
+      - name: Build MCP Server
+        run: npm --prefix mcp-server run build
+
+      - name: Build Frontend
+        run: |
+          sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
+          npm run build
+
+      - name: Build Tauri App (DMG)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}-macos
+          releaseName: 'LLM Wiki macOS ${{ github.ref_name }}'
+          args: --target universal-apple-darwin
+
+      - name: Upload DMG as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-wiki-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 30
