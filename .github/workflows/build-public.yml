@@ -41,7 +41,7 @@ jobs:
       # ──────────────────────────────────────────────
 
       - name: Install Nix
-        uses: determinate-systems/nix-installer-action@v15
+        uses: DeterminateSystems/nix-installer-action@v15
         with:
           extra-conf: |
             experimental-features = nix-command flakes
