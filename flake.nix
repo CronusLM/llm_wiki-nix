@@ -1,6 +1,15 @@
 {
   description = "Nix flake for the LLM Wiki desktop app";
 
+  # Binary cache for this flake's outputs. `extra-*` keys append to the
+  # consumer's existing substituters/keys instead of overriding them.
+  # Consumers are asked to trust this configuration unless they have
+  # `accept-flake-config = true`; see the accompanying CI configuration.
+  nixConfig = {
+    extra-substituters = [ "https://llm-wiki-nix.cachix.org" ];
+    extra-trusted-public-keys = [ "llm-wiki-nix.cachix.org-1:5a8irdJLP4w5MKw5gbH2FnIZmL2N+n3ABdYCjriXt90=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";

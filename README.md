@@ -49,6 +49,25 @@ nix build .#llm-wiki-cli
 nix flake check
 ```
 
+## Binary Cache
+
+Build outputs are published to a public Cachix cache so builds stay fast:
+
+- Cache: <https://llm-wiki-nix.cachix.org>
+- Public key: `llm-wiki-nix.cachix.org-1:5a8irdJLP4w5MKw5gbH2FnIZmL2N+n3ABdYCjriXt90=`
+
+The flake declares the cache via `nixConfig`, so `nix build` / `nix run` will
+offer to trust these settings on first use. To enable it permanently:
+
+```bash
+cachix use llm-wiki-nix
+```
+
+After that, `nix build .#llm-wiki` substitutes the prebuilt AppImage and CLI
+instead of re-downloading the upstream release and rebuilding. CI pushes every
+successful build result automatically; a version bump is cached after its
+first green build.
+
 ## CI/CD
 
 GitHub Actions builds Linux only:
