@@ -1,4 +1,4 @@
-name: Build llm-wiki (Linux Only - Public)
+name: Build llm-wiki (Linux)
 
 on:
   push:
@@ -7,13 +7,23 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
-  build-linux:
+  nix-build:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
+
+    # F1 修复：secrets 上下文不可用于 step 级 `if`（官方 Context availability 表：
+    # jobs.<job_id>.steps.if 上下文不含 secrets）。改为 job 级 env 注入布尔判定
+    # （jobs.<job_id>.env 允许 secrets），step `if` 引用 env（steps.if 允许 env）。
+    env:
+      HAS_CACHIX: ${{ secrets.CACHIX_AUTH_TOKEN != '' && secrets.CACHIX_REPO != '' }}
 
     steps:
       # ──────────────────────────────────────────────
@@ -23,210 +33,85 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.version != '' && github.event.inputs.version || github.ref_name }}
-          submodules: recursive
           fetch-depth: 0
+          submodules: recursive
 
       # ──────────────────────────────────────────────
-      # 2. 系统依赖
+      # 2. 安装 Nix（启用 flakes 与 nix-command）
       # ──────────────────────────────────────────────
 
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            protobuf-compiler \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libxkbcommon-dev \
-            libxrandr-dev \
-            libxss-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxcomposite-dev \
-            libxdamage-dev \
-            libxfixes-dev \
-            libdbus-1-dev \
-            libudev-dev \
-            pkg-config \
-            dpkg \
-            curl \
-            wget \
-            p7zip-full
-
-      # ──────────────────────────────────────────────
-      # 3. Rust 环境
-      # ──────────────────────────────────────────────
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: determinate-systems/nix-installer-action@v15
         with:
-          toolchain: '1.88'
-          target: x86_64-unknown-linux-gnu
+          extra-conf: |
+            experimental-features = nix-command flakes
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      # ──────────────────────────────────────────────
+      # 3. Cachix 二进制缓存（可选；未配置 secrets 时跳过，不影响 CI）
+      # ──────────────────────────────────────────────
+
+      - name: Setup Cachix
+        if: ${{ env.HAS_CACHIX == 'true' }}
+        uses: cachix/cachix-action@v14
         with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          save-if: ${{ github.event_name != 'pull_request' }}
+          name: ${{ secrets.CACHIX_REPO }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # ──────────────────────────────────────────────
-      # 4. Node.js 环境
+      # 4. Nix flake check（验证 flake 表达式与 checks）
       # ──────────────────────────────────────────────
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            npm/package-lock.json
-
-      # ──────────────────────────────────────────────
-      # 5. 核心构建步骤
-      # ──────────────────────────────────────────────
-
-      - name: Install npm dependencies
+      - name: Nix flake check
         run: |
-          npm install --legacy-peer-deps
-          npm --prefix mcp-server install --legacy-peer-deps
+          . /nix/var/nix/profiles/default/etc/profile.d/nix.sh
+          nix flake check
 
-      - name: Build MCP Server
-        run: npm --prefix mcp-server run build
+      # ──────────────────────────────────────────────
+      # 5. Nix build（wrapped 桌面产物 + 原始 AppImage）
+      # ──────────────────────────────────────────────
 
-      - name: Build Frontend
+      - name: Nix build llm-wiki and raw AppImage
         run: |
-          sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
-          npm run build
+          . /nix/var/nix/profiles/default/etc/profile.d/nix.sh
+          nix build .#llm-wiki .#llm-wiki.rawAppImage --print-out-paths
 
       # ──────────────────────────────────────────────
-      # 6. 打包 AppImage (使用 upstream release)
+      # 6. 取件并暂存 AppImage（store 文件 → dist/，剥掉 store hash 前缀作资产名）
       # ──────────────────────────────────────────────
 
-      - name: Download Latest AppImage
+      - name: Stage AppImage
+        id: appimage
         run: |
-          version=$(git describe --tags --abbrev=0 || echo 'v0.6.13')
-          url="https://github.com/nashsu/llm_wiki/releases/download/${version}/LLM.Wiki_${version#v}_amd64.AppImage"
-          curl -L "$url" -o llm-wiki.AppImage
-          chmod +x llm-wiki.AppImage
-
-      - name: Verify AppImage
-        run: |
-          ./llm-wiki.AppImage --version 2>&1 || ./llm-wiki.AppImage --help 2>&1
-
-      # ──────────────────────────────────────────────
-      # 7. 提取并打包为 Nix (nix-build 验证)
-      # ──────────────────────────────────────────────
-
-      - name: Build Nix Package
-        run: |
-          nix-build .#llm-wiki --print-out-paths
+          . /nix/var/nix/profiles/default/etc/profile.d/nix.sh
+          raw_appimage="$(nix build .#llm-wiki.rawAppImage --print-out-paths --no-link)"
+          if [ ! -f "$raw_appimage" ]; then
+            echo "rawAppImage is not a regular file: $raw_appimage" >&2
+            exit 1
+          fi
+          raw_name="$(basename "$raw_appimage")"
+          filename="${raw_name#*-}"
+          mkdir -p dist
+          cp "$raw_appimage" "dist/$filename"
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
 
       # ──────────────────────────────────────────────
-      # 8. 上传 AppImage as artifact
+      # 7. 上传 AppImage 作为 artifact
       # ──────────────────────────────────────────────
 
       - name: Upload AppImage as artifact
         uses: actions/upload-artifact@v4
         with:
           name: llm-wiki-appimage
-          path: llm-wiki.AppImage
+          path: dist/${{ steps.appimage.outputs.filename }}
           retention-days: 30
+
+      # ──────────────────────────────────────────────
+      # 8. 仅在打 tag 时创建 Release
+      # ──────────────────────────────────────────────
 
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: llm-wiki.AppImage
+          files: dist/${{ steps.appimage.outputs.filename }}
           generate_release_notes: true
-
-  build-deb:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.version != '' && github.event.inputs.version || github.ref_name }}
-          submodules: recursive
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            protobuf-compiler \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libxkbcommon-dev \
-            libxrandr-dev \
-            libxss-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxcomposite-dev \
-            libxdamage-dev \
-            libxfixes-dev \
-            libdbus-1-dev \
-            libudev-dev \
-            pkg-config \
-            dpkg \
-            rpm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.88'
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            npm/package-lock.json
-
-      - name: Install npm dependencies
-        run: |
-          npm install --legacy-peer-deps
-          npm --prefix mcp-server install --legacy-peer-deps
-
-      - name: Build MCP Server
-        run: npm --prefix mcp-server run build
-
-      - name: Build Frontend
-        run: |
-          sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
-          npm run build
-
-      - name: Build Nix Package (deb target)
-        run: |
-          nix-build .#llm-wiki --print-out-paths
-
-      - name: Upload .deb as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: llm-wiki-deb
-          path: result
-          retention-days: 30

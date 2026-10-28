@@ -1,6 +1,6 @@
 { lib
 , buildNpmPackage
-, fetchurl
+, fetchFromGitHub
 , importNpmLock
 , makeWrapper
 , nodejs_22
@@ -9,17 +9,25 @@
 }:
 
 let
-  # Use the mcp-server's package.json and package-lock.json
-  packageJson = lib.importJSON ./npm/package.json;
-  packageJsonForNpm = builtins.removeAttrs packageJson [ "overrides" ];
-  packageLockJson = lib.importJSON ./npm/package-lock.json;
+  version = "0.6.13";
 
-  # The CLI binary path
+  # Fetch the source from GitHub to get the mcp-server package.json and package-lock.json
+  src = fetchFromGitHub {
+    owner = "nashsu";
+    repo = "llm_wiki";
+    rev = "v${version}";
+    sha256 = "sha256-Zgh5N+elUFW0GUFuQO1t6oTEKWxrqb4D3iPn9TmzfQc=";
+  };
+
+  packageJson = lib.importJSON "${src}/mcp-server/package.json";
+  packageJsonForNpm = builtins.removeAttrs packageJson [ "overrides" ];
+  packageLockJson = lib.importJSON "${src}/mcp-server/package-lock.json";
+
   binPath =
     let
       rawBinPath =
         if lib.isAttrs packageJson.bin then
-          packageJson.bin.llm-wiki-mcp
+          builtins.getAttr "llm-wiki-mcp" packageJson.bin
         else
           packageJson.bin;
     in
@@ -37,40 +45,41 @@ buildNpmPackage rec {
   version = "0.6.13";
   nodejs = nodejs_22;
 
-  src = fetchurl {
-    url = "https://registry.npmjs.org/llm-wiki-mcp/-/llm-wiki-mcp-${version}.tgz";
-    hash = "sha512-PLACEHOLDER_HASH";
-  };
+  inherit src;
 
-  sourceRoot = "package";
+  # NOTE: no `npmRoot` here. The custom unpackPhase below flattens
+  # ${src}/mcp-server into the build root; importNpmLock.npmConfigHook
+  # would `pushd $npmRoot` into a non-existent directory if it were set.
 
   npmDeps = importNpmLock {
     package = packageJsonForNpm;
     packageLock = packageLockJson;
-    fetcherOpts = {
-      "node_modules/@effect/platform-node" = {
-        name = "platform-node.tgz";
-      };
-      "node_modules/@effect/platform-node-shared" = {
-        name = "platform-node-shared.tgz";
-      };
-      "node_modules/@effect/sql-sqlite-bun" = {
-        name = "sql-sqlite-bun.tgz";
-      };
-      "node_modules/effect" = {
-        name = "effect.tgz";
-      };
-    };
   };
 
+  # Use importNpmLock's offline hook instead of the default
+  # npmHooks.npmConfigHook: it registers itself on postConfigureHooks,
+  # switches npm to offline mode, installs node_modules from the
+  # store-patched package-lock.json in npmDeps (no network needed),
+  # and restores the original package.json afterwards.
+  # Requires configurePhase to run `runHook postConfigure` to fire.
   npmConfigHook = importNpmLock.npmConfigHook;
   nativeBuildInputs = [ makeWrapper ];
   dontNpmBuild = true;
 
-  postPatch = ''
-    cp ${./npm/package.json} package.json
-    cp ${./npm/package-lock.json} package-lock.json
+  # Use unpackPhase to copy the source to a writable location
+  unpackPhase = ''
+    runHook preUnpack
 
+    # Copy the mcp-server directory to the build directory
+    cp -r ${src}/mcp-server/* .
+
+    runHook postUnpack
+  '';
+
+  configurePhase = ''
+    runHook preConfigure
+
+    # Remove overrides from package.json
     ${lib.optionalString (packageJson ? overrides) ''
       node -e '
         const fs = require("fs");
@@ -80,23 +89,39 @@ buildNpmPackage rec {
       '
     ''}
 
+    # Dependencies are installed offline by importNpmLock.npmConfigHook
+    # (postConfigure hook above); no network access is needed or allowed.
+
+    runHook postConfigure
+  '';
+
+  buildPhase = ''
+    runHook preBuild
+
+    # Build TypeScript
+    npm run build
+
+    runHook postBuild
+  '';
+
+  installPhase = ''
+    # Patch version in built files
     bin_path=${lib.escapeShellArg binPath}
     if [ ! -f "$bin_path" ]; then
       echo "missing CLI entrypoint: $bin_path" >&2
       exit 1
     fi
 
-    sed -i "s/var version = \\\".*\\\";/var version = \\\"${version}\\\";/" "$bin_path"
+    # 修复：sed -i 在 $out 只读目录下会失败，改用重定向
+    sed "s/var version = \\\".*\\\";/var version = \\\"${version}\\\";/" "$bin_path" > "$bin_path.tmp" && mv "$bin_path.tmp" "$bin_path"
 
     ${lib.optionalString (binCjsPath != null) ''
       bin_cjs_path=${lib.escapeShellArg binCjsPath}
       if [ -f "$bin_cjs_path" ]; then
-        sed -i "s/var version = \\\".*\\\";/var version = \\\"${version}\\\";/" "$bin_cjs_path"
+        sed "s/var version = \\\".*\\\";/var version = \\\"${version}\\\";/" "$bin_cjs_path" > "$bin_cjs_path.tmp" && mv "$bin_cjs_path.tmp" "$bin_cjs_path"
       fi
     ''}
-  '';
-
-  installPhase = ''
+    
     runHook preInstall
 
     mkdir -p $out/lib/node_modules/llm-wiki-mcp $out/bin
@@ -114,8 +139,8 @@ buildNpmPackage rec {
   meta = with lib; {
     description = "LLM Wiki MCP Server CLI";
     homepage = "https://github.com/nashsu/llm_wiki";
-    license = licenses.elastic-2-0;
+    license = licenses.elastic20;
     mainProgram = "llm-wiki-mcp";
-    platforms = platforms.unix;
+    platforms = platforms.linux;
   };
 }

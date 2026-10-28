@@ -9,31 +9,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Rust
-target/
-Cargo.lock
-
-# Tauri
-src-tauri/target/
-*.appimage
-*.dmg
-*.deb
-
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
-
 # Cachix
 .cachix/
 
-# Build artifacts
+# Build artifacts (Linux AppImage only)
 *.AppImage
-*.dmg
-*.deb
-*.msi

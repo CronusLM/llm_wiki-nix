@@ -1,6 +1,5 @@
 { lib
 , stdenv
-, stdenvNoCC
 , appimageTools
 , fetchurl
 , makeWrapper
@@ -12,33 +11,37 @@
 let
   pname = "llm-wiki";
   version = "0.6.13";
-  linuxHash = "sha256-PLACEHOLDER_LINUX_HASH";
-  darwinX64Hash = "sha256-PLACEHOLDER_DARWIN_X64_HASH";
-  darwinArm64Hash = "sha256-PLACEHOLDER_DARWIN_ARM64_HASH";
+  linuxX64Hash = "sha256-HE7/A7dJq+F51+tA6wNBaUvFO+hmq6ViC3KR8+QszTA=";
+  linuxArm64Hash = "sha256-C0POGV58BbIpPuLTh40n/mImbTxn1At6DelKECQoVLU=";
+
+  # Icon extracted from AppImage
+  icon = ./icons/llm-wiki.png;
 
   commonMeta = {
     description = "LLM Wiki - A personal knowledge base that builds itself";
     homepage = "https://github.com/nashsu/llm_wiki";
     changelog = "https://github.com/nashsu/llm_wiki/releases/tag/v${version}";
     downloadPage = "https://github.com/nashsu/llm_wiki/releases";
-    license = lib.licenses.elastic-2-0;
+    license = lib.licenses.elastic20;
     mainProgram = pname;
     sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
     platforms = [
       "x86_64-linux"
-      "x86_64-darwin"
-      "aarch64-darwin"
+      "aarch64-linux"
     ];
+    maintainers = [ {
+      github = "package-maintainer";
+    }];
   };
 
-  linuxPackage =
+  linuxX64Package =
     let
       src = fetchurl {
-        url = "https://github.com/nashsu/llm_wiki/releases/download/v${version}/llm-wiki-linux.AppImage";
-        hash = linuxHash;
+        url = "https://github.com/nashsu/llm_wiki/releases/download/v${version}/LLM.Wiki_0.6.13_amd64.AppImage";
+        hash = linuxX64Hash;
       };
 
-      appimageContents = appimageTools.extractType2 {
+      appimageContents = appimageTools.extract {
         inherit pname version src;
       };
     in
@@ -49,28 +52,32 @@ let
       extraInstallCommands = ''
         mkdir -p "$out/share"
 
-        if [ -d ${appimageContents}/usr/share ]; then
-          cp -r ${appimageContents}/usr/share/* "$out/share/"
+        if [ -d ${appimageContents}/share ]; then
+          cp -r ${appimageContents}/share/* "$out/share/"
+        fi
+
+        # Install the real desktop entries from the extracted AppImage.
+        # NOTE: the root-level "LLM Wiki.desktop" in the extract is a
+        # symlink to usr/share/applications/...; the real files live in
+        # ${appimageContents}/usr/share/applications/ (depth 3).
+        if [ -d ${appimageContents}/usr/share/applications ]; then
+          mkdir -p "$out/share/applications"
+          find ${appimageContents}/usr/share/applications -maxdepth 1 -type f -name '*.desktop' \
+            -exec cp {} "$out/share/applications/" \;
         fi
 
         desktop_file="$(find "$out/share" -type f -name '*.desktop' | head -n 1 || true)"
-        if [ -z "$desktop_file" ]; then
-          desktop_source="$(find ${appimageContents} -maxdepth 2 -type f -name '*.desktop' | head -n 1 || true)"
-          if [ -n "$desktop_source" ]; then
-            desktop_file="$out/share/applications/$(basename "$desktop_source")"
-            install -Dm444 "$desktop_source" "$desktop_file"
-          fi
-        fi
 
         if [ -n "$desktop_file" ]; then
           desktop_basename="$(basename "$desktop_file")"
 
-          sed -i \
+          # 修复：sed -i 在 $out 只读目录下会失败，改用重定向
+          sed \
             -e 's|Exec=AppRun|Exec=${pname}|g' \
             -e 's|Exec=AppRun %U|Exec=${pname} %U|g' \
             -e 's|TryExec=AppRun|TryExec=${pname}|g' \
             -e 's|^StartupWMClass=.*$|StartupWMClass=llm-wiki|g' \
-            "$desktop_file"
+            "$desktop_file" > "$desktop_file.tmp" && mv "$desktop_file.tmp" "$desktop_file"
 
           wrapProgram "$out/bin/${pname}" \
             --set CHROME_DESKTOP "$desktop_basename" \
@@ -83,68 +90,92 @@ let
         if [ -f ${appimageContents}/.DirIcon ]; then
           install -Dm444 ${appimageContents}/.DirIcon "$out/share/pixmaps/${pname}.png"
         fi
+
+        # Install extracted icon
+        if [ -f ${icon} ]; then
+          install -Dm444 ${icon} "$out/share/icons/hicolor/512x512/apps/${pname}.png"
+        fi
       '';
+
+      # Raw upstream AppImage for CI distribution (task-6 takes this path).
+      passthru.rawAppImage = src;
 
       meta = commonMeta;
     };
 
-  darwinAppName = "LLM Wiki.app";
-  darwinExecutable = "LLM Wiki";
-  darwinAsset =
-    if stdenv.hostPlatform.isAarch64 then
-      "llm-wiki-macos-arm64.dmg"
-    else
-      "llm-wiki-macos-x64.dmg";
-  darwinHash =
-    if stdenv.hostPlatform.isAarch64 then
-      darwinArm64Hash
-    else
-      darwinX64Hash;
+  linuxArm64Package =
+    let
+      src = fetchurl {
+        url = "https://github.com/nashsu/llm_wiki/releases/download/v${version}/LLM.Wiki_0.6.13_aarch64.AppImage";
+        hash = linuxArm64Hash;
+      };
 
-  darwinPackage = stdenvNoCC.mkDerivation {
-    inherit pname version;
+      appimageContents = appimageTools.extract {
+        inherit pname version src;
+      };
+    in
+    appimageTools.wrapType2 {
+      inherit pname version src;
+      nativeBuildInputs = [ makeWrapper ];
 
-    src = fetchurl {
-      url = "https://github.com/nashsu/llm_wiki/releases/download/v${version}/${darwinAsset}";
-      hash = darwinHash;
+      extraInstallCommands = ''
+        mkdir -p "$out/share"
+
+        if [ -d ${appimageContents}/share ]; then
+          cp -r ${appimageContents}/share/* "$out/share/"
+        fi
+
+        # Install the real desktop entries from the extracted AppImage.
+        # NOTE: the root-level "LLM Wiki.desktop" in the extract is a
+        # symlink to usr/share/applications/...; the real files live in
+        # ${appimageContents}/usr/share/applications/ (depth 3).
+        if [ -d ${appimageContents}/usr/share/applications ]; then
+          mkdir -p "$out/share/applications"
+          find ${appimageContents}/usr/share/applications -maxdepth 1 -type f -name '*.desktop' \
+            -exec cp {} "$out/share/applications/" \;
+        fi
+
+        desktop_file="$(find "$out/share" -type f -name '*.desktop' | head -n 1 || true)"
+
+        if [ -n "$desktop_file" ]; then
+          desktop_basename="$(basename "$desktop_file")"
+
+          # 修复：sed -i 在 $out 只读目录下会失败，改用重定向
+          sed \
+            -e 's|Exec=AppRun|Exec=${pname}|g' \
+            -e 's|Exec=AppRun %U|Exec=${pname} %U|g' \
+            -e 's|TryExec=AppRun|TryExec=${pname}|g' \
+            -e 's|^StartupWMClass=.*$|StartupWMClass=llm-wiki|g' \
+            "$desktop_file" > "$desktop_file.tmp" && mv "$desktop_file.tmp" "$desktop_file"
+
+          wrapProgram "$out/bin/${pname}" \
+            --set CHROME_DESKTOP "$desktop_basename" \
+            --prefix XDG_DATA_DIRS : "$out/share" \
+            ${lib.optionalString codexSupport ''
+              --prefix PATH : "${lib.makeBinPath [ codex ]}"
+            ''}
+        fi
+
+        if [ -f ${appimageContents}/.DirIcon ]; then
+          install -Dm444 ${appimageContents}/.DirIcon "$out/share/pixmaps/${pname}.png"
+        fi
+
+        # Install extracted icon
+        if [ -f ${icon} ]; then
+          install -Dm444 ${icon} "$out/share/icons/hicolor/512x512/apps/${pname}.png"
+        fi
+      '';
+
+      # Raw upstream AppImage for CI distribution (task-6 takes this path).
+      passthru.rawAppImage = src;
+
+      meta = commonMeta;
     };
 
-    nativeBuildInputs = [
-      makeWrapper
-      unzip
-    ];
-
-    sourceRoot = ".";
-    dontConfigure = true;
-    dontBuild = true;
-
-    installPhase = ''
-      runHook preInstall
-
-      mkdir -p "$out/Applications" "$out/bin"
-      # Extract dmg and find the app
-      7z x $src -o$TMPDIR/dmg
-      app_path=$(find $TMPDIR/dmg -name "*.app" -maxdepth 2 | head -n1)
-      if [ -n "$app_path" ]; then
-        cp -r "$app_path" "$out/Applications/LLM Wiki.app"
-      fi
-
-      makeWrapper \
-        "$out/Applications/LLM Wiki.app/Contents/MacOS/LLM Wiki" \
-        "$out/bin/${pname}" \
-        ${lib.optionalString codexSupport ''
-          --prefix PATH : "${lib.makeBinPath [ codex ]}"
-        ''}
-
-      runHook postInstall
-    '';
-
-    meta = commonMeta;
-  };
 in
 if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64 then
-  linuxPackage
-else if stdenv.hostPlatform.isDarwin then
-  darwinPackage
+  linuxX64Package
+else if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64 then
+  linuxArm64Package
 else
-  throw "llm-wiki desktop is only packaged for x86_64-linux, x86_64-darwin, and aarch64-darwin"
+  throw "llm-wiki desktop is only packaged for x86_64-linux and aarch64-linux"

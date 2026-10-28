@@ -6,11 +6,13 @@ Nix flake for packaging [LLM Wiki](https://github.com/nashsu/llm_wiki) - A perso
 
 This repository provides Nix packages for the LLM Wiki desktop application and MCP server CLI, built from upstream release artifacts.
 
+**Platform scope:** Linux only (x86_64 AppImage).
+
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| `llm-wiki` | Desktop application (AppImage on Linux, DMG on macOS) |
+| `llm-wiki` | Desktop application (Linux AppImage only) |
 | `llm-wiki-cli` / `llm-wiki-mcp` | MCP Server CLI |
 
 ## Usage
@@ -49,9 +51,9 @@ nix flake check
 
 ## CI/CD
 
-GitHub Actions workflows are configured for:
-- Linux (AppImage + .deb)
-- macOS (DMG - universal binary)
+GitHub Actions builds Linux only:
+
+- x86_64-linux AppImage
 - Cachix caching for faster builds
 
 Required secrets:
