@@ -41,12 +41,20 @@ let
         hash = linuxX64Hash;
       };
 
+      # NOTE: the upstream AppImage bundles an old set of wayland libraries
+      # (client/cursor/egl/server). They get loaded first via the bundled
+      # WebKit's $ORIGIN runpath and break EGL initialisation against the
+      # host GL stack (upstream nashsu/llm_wiki#457). Strip them so the
+      # system libwayland from the FHS environment is used instead.
       appimageContents = appimageTools.extract {
         inherit pname version src;
+        postExtract = "rm -f $out/usr/lib/libwayland-*";
       };
     in
-    appimageTools.wrapType2 {
-      inherit pname version src;
+    appimageTools.wrapAppImage {
+      inherit pname version;
+
+      contents = appimageContents;
       nativeBuildInputs = [ makeWrapper ];
 
       extraInstallCommands = ''
@@ -110,12 +118,20 @@ let
         hash = linuxArm64Hash;
       };
 
+      # NOTE: the upstream AppImage bundles an old set of wayland libraries
+      # (client/cursor/egl/server). They get loaded first via the bundled
+      # WebKit's $ORIGIN runpath and break EGL initialisation against the
+      # host GL stack (upstream nashsu/llm_wiki#457). Strip them so the
+      # system libwayland from the FHS environment is used instead.
       appimageContents = appimageTools.extract {
         inherit pname version src;
+        postExtract = "rm -f $out/usr/lib/libwayland-*";
       };
     in
-    appimageTools.wrapType2 {
-      inherit pname version src;
+    appimageTools.wrapAppImage {
+      inherit pname version;
+
+      contents = appimageContents;
       nativeBuildInputs = [ makeWrapper ];
 
       extraInstallCommands = ''
