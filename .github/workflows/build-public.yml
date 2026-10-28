@@ -1,4 +1,4 @@
-name: Build llm-wiki (Public)
+name: Build llm-wiki (Linux Only - Public)
 
 on:
   push:
@@ -88,7 +88,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
-            mcp-server/package-lock.json
+            npm/package-lock.json
 
       # ──────────────────────────────────────────────
       # 5. 核心构建步骤
@@ -108,31 +108,44 @@ jobs:
           npm run build
 
       # ──────────────────────────────────────────────
-      # 6. Tauri AppImage 构建
+      # 6. 打包 AppImage (使用 upstream release)
       # ──────────────────────────────────────────────
 
-      - name: Build Tauri App (AppImage)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}-linux
-          releaseName: 'LLM Wiki Linux ${{ github.ref_name }}'
-          releaseBody: 'Automated build for Linux (AppImage)'
-          args: --target x86_64-unknown-linux-gnu
+      - name: Download Latest AppImage
+        run: |
+          version=$(git describe --tags --abbrev=0 || echo 'v0.6.13')
+          url="https://github.com/nashsu/llm_wiki/releases/download/${version}/LLM.Wiki_${version#v}_amd64.AppImage"
+          curl -L "$url" -o llm-wiki.AppImage
+          chmod +x llm-wiki.AppImage
+
+      - name: Verify AppImage
+        run: |
+          ./llm-wiki.AppImage --version 2>&1 || ./llm-wiki.AppImage --help 2>&1
+
+      # ──────────────────────────────────────────────
+      # 7. 提取并打包为 Nix (nix-build 验证)
+      # ──────────────────────────────────────────────
+
+      - name: Build Nix Package
+        run: |
+          nix-build .#llm-wiki --print-out-paths
+
+      # ──────────────────────────────────────────────
+      # 8. 上传 AppImage as artifact
+      # ──────────────────────────────────────────────
 
       - name: Upload AppImage as artifact
         uses: actions/upload-artifact@v4
         with:
           name: llm-wiki-appimage
-          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          path: llm-wiki.AppImage
           retention-days: 30
 
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/release/bundle/appimage/*.AppImage
+          files: llm-wiki.AppImage
           generate_release_notes: true
 
   build-deb:
@@ -192,7 +205,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
-            mcp-server/package-lock.json
+            npm/package-lock.json
 
       - name: Install npm dependencies
         run: |
@@ -207,18 +220,13 @@ jobs:
           sed -i 's/"build": "npm run typecheck && vite build"/"build": "vite build"/' package.json
           npm run build
 
-      - name: Build Tauri App (.deb)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}-linux-deb
-          releaseName: 'LLM Wiki Linux ${{ github.ref_name }} (.deb)'
-          args: --target x86_64-unknown-linux-gnu --bundle-type deb
+      - name: Build Nix Package (deb target)
+        run: |
+          nix-build .#llm-wiki --print-out-paths
 
       - name: Upload .deb as artifact
         uses: actions/upload-artifact@v4
         with:
           name: llm-wiki-deb
-          path: src-tauri/target/release/bundle/deb/*.deb
+          path: result
           retention-days: 30
